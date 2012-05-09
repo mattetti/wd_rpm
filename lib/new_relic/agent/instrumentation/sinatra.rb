@@ -4,7 +4,7 @@ DependencyDetection.defer do
   @name = :sinatra
 
   depends_on do
-    defined?(::Sinatra) && defined?(::Sinatra::Base) &&
+    defined?(::Sinatra) && defined?(::Sinatra::Base) && !defined?(::WeaselDiesel) &&
       Sinatra::Base.private_method_defined?(:dispatch!)
   end
 
