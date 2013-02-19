@@ -7,7 +7,6 @@ require 'new_relic/latest_changes'
 
 Gem::Specification.new do |s|
   s.name = "wd_newrelic_rpm"
-  s.name = "newrelic_rpm"
   s.version = NewRelic::VERSION::STRING
   s.required_rubygems_version = Gem::Requirement.new("> 1.3.1") if s.respond_to? :required_rubygems_version=
   s.authors = [ "Jason Clark", "Sam Goldstein", "Michael Granger", "Jon Guymon", "Ben Weintraub" ]
