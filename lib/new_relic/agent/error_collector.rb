@@ -21,6 +21,8 @@ module NewRelic
       # Returns a new error collector
       def initialize
         @errors = []
+        @seen_error_ids = []
+
         # lookup of exception class names to ignore.  Hash for fast access
         @ignore = {}
         @capture_source = Agent.config[:'error_collector.capture_source']
@@ -92,7 +94,11 @@ module NewRelic
         end
 
         # Increments a statistic that tracks total error rate
-        def increment_error_count!
+        # Be sure not to double-count same exception. This clears per harvest.
+        def increment_error_count!(exception)
+          return if @seen_error_ids.include?(exception.object_id)
+          @seen_error_ids << exception.object_id
+
           NewRelic::Agent.get_stats("Errors/all").increment_count
         end
 
@@ -102,7 +108,7 @@ module NewRelic
         def should_exit_notice_error?(exception)
           if enabled?
             if !error_is_ignored?(exception)
-              increment_error_count!
+              increment_error_count!(exception)
               return exception.nil? # exit early if the exception is nil
             end
           end
@@ -211,6 +217,7 @@ module NewRelic
 
       include NoticeError
 
+
       # Notice the error with the given available options:
       #
       # * <tt>:uri</tt> => The request path, minus any request params or query string.
@@ -223,6 +230,7 @@ module NewRelic
       # If exception is nil, the error count is bumped and no traced error is recorded
       def notice_error(exception, options={})
         return if should_exit_notice_error?(exception)
+        NewRelic::Agent.instance.events.notify(:notice_error, exception, options)
         action_path     = fetch_from_options(options, :metric, (NewRelic::Agent.instance.stats_engine.scope_name || ''))
         exception_options = error_params_from_options(options).merge(exception_info(exception))
         add_to_error_queue(NewRelic::NoticedError.new(action_path, exception_options, exception))
@@ -237,6 +245,9 @@ module NewRelic
         @lock.synchronize do
           errors = @errors
           @errors = []
+
+          # Only expect to re-see errors on same request, so clear on harvest
+          @seen_error_ids = []
 
           if unsent_errors && !unsent_errors.empty?
             errors = unsent_errors + errors

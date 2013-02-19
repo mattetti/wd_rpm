@@ -10,12 +10,22 @@ module NewRelic
         def env
           @env ||= RAILS_ENV.dup
         end
+
+        # Rails can return an empty string from this method, causing
+        # the agent not to start even when it is properly in a rails 3
+        # application, so we test the value to make sure it actually
+        # has contents, and bail to the parent class if it is empty.
         def root
-          if defined?(RAILS_ROOT) && RAILS_ROOT.to_s != ''
-            RAILS_ROOT.to_s
+          root = rails_root.to_s
+          if !root.empty?
+            root
           else
             super
           end
+        end
+
+        def rails_root
+          RAILS_ROOT if defined?(RAILS_ROOT)
         end
 
         def rails_config
@@ -46,8 +56,22 @@ module NewRelic
             ::NewRelic::Agent.logger.info("New Relic Agent not running.")
           else
             ::NewRelic::Agent.logger.info("Starting the New Relic Agent.")
-            install_developer_mode rails_config if Agent.config[:developer_mode]
+            install_developer_mode(rails_config) if Agent.config[:developer_mode]
             install_browser_monitoring(rails_config)
+            install_agent_hooks(rails_config)
+          end
+        end
+
+        def install_agent_hooks(config)
+          return if @agent_hooks_installed
+          @agent_hooks_installed = true
+          return if config.nil? || !config.respond_to?(:middleware)
+          begin
+            require 'new_relic/rack/agent_hooks'
+            config.middleware.use NewRelic::Rack::AgentHooks
+            ::NewRelic::Agent.logger.debug("Installed New Relic Agent Hooks middleware")
+          rescue => e
+            ::NewRelic::Agent.logger.warn("Error installing New Relic Agent Hooks middleware", e)
           end
         end
 
@@ -60,7 +84,7 @@ module NewRelic
             config.middleware.use NewRelic::Rack::BrowserMonitoring
             ::NewRelic::Agent.logger.debug("Installed New Relic Browser Monitoring middleware")
           rescue => e
-            ::NewRelic::Agent.logger.warn("Error installing New Relic Browser Monitoring middleware: #{e.inspect}")
+            ::NewRelic::Agent.logger.warn("Error installing New Relic Browser Monitoring middleware", e)
           end
         end
 
@@ -80,7 +104,7 @@ module NewRelic
                 ::NewRelic::Agent.logger.debug("To view performance information, go to http://localhost#{port}/newrelic")
               end
             rescue => e
-              ::NewRelic::Agent.logger.warn("Error installing New Relic Developer Mode: #{e.inspect}")
+              ::NewRelic::Agent.logger.warn("Error installing New Relic Developer Mode", e)
             end
           elsif rails_config
             ::NewRelic::Agent.logger.warn("Developer mode not available for Rails versions prior to 2.2")

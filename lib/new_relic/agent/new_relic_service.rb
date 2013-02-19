@@ -29,7 +29,16 @@ module NewRelic
         Agent.config.register_callback(:'audit_log.enabled') do |enabled|
           @audit_logger.enabled = enabled
         end
-        
+        Agent.config.register_callback(:ssl) do |ssl|
+          if !ssl
+            ::NewRelic::Agent.logger.warn("Agent is configured not to use SSL when communicating with New Relic's servers")
+          elsif !Agent.config[:verify_certificate]
+            ::NewRelic::Agent.logger.warn("Agent is configured to use SSL but to skip certificate validation when communicating with New Relic's servers")
+          else
+            ::NewRelic::Agent.logger.debug("Agent is configured to use SSL")
+          end
+        end
+
         Agent.config.register_callback(:marshaller) do |marshaller|
           begin
             if marshaller == 'json'
@@ -104,6 +113,73 @@ module NewRelic
         end
         check_post_size(data)
         [data, encoding]
+      end
+
+      # One session with the service's endpoint.  In this case the session
+      # represents 1 tcp connection which may transmit multiple HTTP requests
+      # via keep-alive.
+      def session(&block)
+        raise ArgumentError, "#{self.class}#shared_connection must be passed a block" unless block_given?
+
+        http = create_http_connection
+
+        # Immediately open a TCP connection to the server and leave it open for
+        # multiple requests.
+        ::NewRelic::Agent.logger.debug("Opening TCP connection to #{http.address}:#{http.port}")
+        http.start
+        begin
+          @shared_tcp_connection = http
+          block.call
+        ensure
+          @shared_tcp_connection = nil
+          # Close the TCP socket
+          ::NewRelic::Agent.logger.debug("Closing TCP connection to #{http.address}:#{http.port}")
+          http.finish
+        end
+      end
+
+      # Return a Net::HTTP connection object to make a call to the collector.
+      # We'll reuse the same handle for cases where we're using keep-alive, or
+      # otherwise create a new one.
+      def http_connection
+        @shared_tcp_connection || create_http_connection
+      end
+
+      # Return the Net::HTTP with proxy configuration given the NewRelic::Control::Server object.
+      def create_http_connection
+        proxy_server = control.proxy_server
+        # Proxy returns regular HTTP if @proxy_host is nil (the default)
+        http_class = Net::HTTP::Proxy(proxy_server.name, proxy_server.port,
+                                      proxy_server.user, proxy_server.password)
+
+        http = http_class.new((@collector.ip || @collector.name), @collector.port)
+        if Agent.config[:ssl]
+          begin
+            # Jruby 1.6.8 requires a gem for full ssl support and will throw
+            # an error when use_ssl=(true) is called and jruby-openssl isn't
+            # installed
+            http.use_ssl = true
+            if Agent.config[:verify_certificate]
+              http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+              http.ca_file = cert_file_path
+            else
+              http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+            end
+          rescue StandardError, LoadError
+            msg = "Agent is configured to use SSL, but SSL is not available in the environment. "
+            msg << "Either disable SSL in the agent configuration, or install SSL support."
+            raise UnrecoverableAgentException.new(msg)
+          end
+        end
+        ::NewRelic::Agent.logger.debug("Created net/http handle to #{http.address}:#{http.port}")
+        http
+      end
+
+
+      # The path to the certificate file used to verify the SSL
+      # connection if verify_peer is enabled
+      def cert_file_path
+        File.expand_path(File.join(control.newrelic_root, 'cert', 'cacert.pem'))
       end
 
       private
@@ -183,31 +259,33 @@ module NewRelic
         request.content_type = "application/octet-stream"
         request.body = opts[:data]
 
-        ::NewRelic::Agent.logger.debug "Connect to #{opts[:collector]}#{opts[:uri]}"
-
         response = nil
-        http = control.http_connection(@collector)
+        http = http_connection
         http.read_timeout = nil
         begin
           NewRelic::TimerLib.timeout(@request_timeout) do
+            ::NewRelic::Agent.logger.debug "Sending request to #{opts[:collector]}#{opts[:uri]}"
             response = http.request(request)
           end
         rescue Timeout::Error
           ::NewRelic::Agent.logger.warn "Timed out trying to post data to New Relic (timeout = #{@request_timeout} seconds)" unless @request_timeout < 30
           raise
         end
-        if response.is_a? Net::HTTPUnauthorized
+        case response
+        when Net::HTTPSuccess
+          true # fall through
+        when Net::HTTPUnauthorized
           raise LicenseException, 'Invalid license key, please contact support@newrelic.com'
-        elsif response.is_a? Net::HTTPServiceUnavailable
+        when Net::HTTPServiceUnavailable
           raise ServerConnectionException, "Service unavailable (#{response.code}): #{response.message}"
-        elsif response.is_a? Net::HTTPGatewayTimeOut
+        when Net::HTTPGatewayTimeOut
           ::NewRelic::Agent.logger.warn("Timed out getting response: #{response.message}")
           raise Timeout::Error, response.message
-        elsif response.is_a? Net::HTTPRequestEntityTooLarge
+        when Net::HTTPRequestEntityTooLarge
           raise UnrecoverableServerException, '413 Request Entity Too Large'
-        elsif response.is_a? Net::HTTPUnsupportedMediaType
+        when Net::HTTPUnsupportedMediaType
           raise UnrecoverableServerException, '415 Unsupported Media Type'
-        elsif !(response.is_a? Net::HTTPSuccess)
+        else
           raise ServerConnectionException, "Unexpected response from server (#{response.code}): #{response.message}"
         end
         response
@@ -215,6 +293,8 @@ module NewRelic
         # These include Errno connection errors
         raise NewRelic::Agent::ServerConnectionException, "Recoverable error connecting to the server: #{e}"
       end
+
+
 
       # Decompresses the response from the server, if it is gzip
       # encoded, otherwise returns it verbatim

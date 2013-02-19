@@ -30,7 +30,7 @@ module NewRelic
             when 4
               :rails4
             else
-              Agent.logger.error "Detected unsupported Rails version #{Rails::VERSION::STRING}"
+              ::NewRelic::Agent::Agent.logger.error "Detected unsupported Rails version #{Rails::VERSION::STRING}"
             end
           when defined?(::Sinatra) && defined?(::Sinatra::Base) then :sinatra
           when defined?(::NewRelic::IA) then :external
@@ -55,8 +55,8 @@ module NewRelic
         :api_host               => 'rpm.newrelic.com',
         :port                   => Proc.new { self[:ssl] ? 443 : 80 },
         :api_port               => Proc.new { self[:port] },
-        :ssl                    => false,
-        :verify_certificate     => false,
+        :ssl                    => true,
+        :verify_certificate     => true,
         :sync_startup           => false,
         :send_data_on_exit      => true,
         :post_size_limit        => 2 * 1024 * 1024, # 2 megs

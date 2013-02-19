@@ -18,6 +18,11 @@ class NewRelic::Agent::WorkerLoopTest < Test::Unit::TestCase
 
   def test_with_duration
     worker_loop = NewRelic::Agent::WorkerLoop.new(:duration => 0.1)
+
+    # Advance in small increments vs our period so time will pass over the
+    # nasty multiple calls to Time.now that WorkerLoop makes
+    Time.stubs(:now).returns(*ticks(0, 0.12, 0.005))
+
     count = 0
     worker_loop.run(0.04) do
       count += 1
@@ -26,26 +31,20 @@ class NewRelic::Agent::WorkerLoopTest < Test::Unit::TestCase
     assert_equal 2, count
   end
 
+  def test_duration_clock_starts_with_run
+    # This test is a little on the nose, but any timing based test WILL fail in CI
+    worker_loop = NewRelic::Agent::WorkerLoop.new(:duration => 0.01)
+    assert_nil worker_loop.instance_variable_get(:@deadline)
+
+    worker_loop.run(0.001) {}
+    assert !worker_loop.instance_variable_get(:@deadline).nil?
+  end
+
   def test_loop_limit
     worker_loop = NewRelic::Agent::WorkerLoop.new(:limit => 2)
     iterations = 0
     worker_loop.run(0) { iterations += 1 }
     assert_equal 2, iterations
-  end
-
-  def test_density
-    # This shows how the tasks stay aligned with the period and don't drift.
-    count = 0
-    start = Time.now
-    @worker_loop.run(0.03) do
-      count +=1
-      if count == 3
-        @worker_loop.stop
-        next
-      end
-    end
-    elapsed = Time.now - start
-    assert_in_delta 0.09, elapsed, 0.03
   end
 
   def test_task_error__standard
@@ -71,11 +70,15 @@ class NewRelic::Agent::WorkerLoopTest < Test::Unit::TestCase
   end
 
   def test_task_error__server
-    expects_no_logging(:error, any_parameters)
+    expects_no_logging(:error)
     expects_logging(:debug, any_parameters)
     @worker_loop.run(0) do
       @worker_loop.stop
       raise NewRelic::Agent::ServerError, "Runtime Error Test"
     end
+  end
+
+  def ticks(start, finish, step)
+    (start..finish).step(step).to_a
   end
 end

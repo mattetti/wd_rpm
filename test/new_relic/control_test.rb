@@ -12,42 +12,6 @@ class NewRelic::ControlTest < Test::Unit::TestCase
     NewRelic::Agent.shutdown
   end
 
-  def test_cert_file_path
-    assert @control.cert_file_path
-    assert_equal File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'cert', 'cacert.pem')), @control.cert_file_path
-  end
-
-  # This test does not actually use the ruby agent in any way - it's
-  # testing that the CA file we ship actually validates our server's
-  # certificate. It's used for customers who enable verify_certificate
-  def test_cert_file
-    require 'socket'
-    require 'openssl'
-
-    s   = TCPSocket.new 'collector.newrelic.com', 443
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.ca_file = @control.cert_file_path
-    ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
-    s   = OpenSSL::SSL::SSLSocket.new s, ctx
-    s.connect
-    # should not raise an error
-  end
-
-  # see above, but for staging, as well. This allows us to test new
-  # certificates in a non-customer-facing place before setting them
-  # live.
-  def test_staging_cert_file
-    require 'socket'
-    require 'openssl'
-
-    s   = TCPSocket.new 'staging-collector.newrelic.com', 443
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.ca_file = @control.cert_file_path
-    ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
-    s   = OpenSSL::SSL::SSLSocket.new s, ctx
-    s.connect
-    # should not raise an error
-  end
 
   def test_test_config
     if defined?(::Rails) && ::Rails::VERSION::MAJOR.to_i == 4
@@ -67,6 +31,10 @@ class NewRelic::ControlTest < Test::Unit::TestCase
     control.local_env
   end
 
+  def test_settings_accessor
+    assert_not_nil control.settings
+  end
+
   def test_root
     assert File.directory?(NewRelic::Control.newrelic_root), NewRelic::Control.newrelic_root
     if defined?(Rails)
@@ -83,22 +51,30 @@ class NewRelic::ControlTest < Test::Unit::TestCase
   end
 
   def test_resolve_ip_for_localhost
-    assert_equal nil, control.send(:convert_to_ip_address, 'localhost')
+    with_config(:ssl => false, :verify_certificate => false) do
+      assert_equal nil, control.send(:convert_to_ip_address, 'localhost')
+    end
   end
 
   def test_resolve_ip_for_non_existent_domain
-    Resolv.stubs(:getaddress).raises(Resolv::ResolvError)
-    IPSocket.stubs(:getaddress).raises(SocketError)
-    assert_equal nil, control.send(:convert_to_ip_address, 'q1239988737.us')
+    with_config(:ssl => false, :verify_certificate => false) do
+      Resolv.stubs(:getaddress).raises(Resolv::ResolvError)
+      IPSocket.stubs(:getaddress).raises(SocketError)
+      assert_equal nil, control.send(:convert_to_ip_address, 'q1239988737.us')
+    end
   end
 
   def test_resolves_valid_ip
-    Resolv.stubs(:getaddress).with('collector.newrelic.com').returns('204.93.223.153')
-    assert_equal '204.93.223.153', control.send(:convert_to_ip_address, 'collector.newrelic.com')
+    with_config(:ssl => false, :verify_certificate => false) do
+      Resolv.stubs(:getaddress).with('collector.newrelic.com').returns('204.93.223.153')
+      assert_equal '204.93.223.153', control.send(:convert_to_ip_address, 'collector.newrelic.com')
+    end
   end
 
   def test_do_not_resolve_if_we_need_to_verify_a_cert
-    assert_equal nil, control.send(:convert_to_ip_address, 'localhost')
+    with_config(:ssl => false, :verify_certificate => false) do
+      assert_equal nil, control.send(:convert_to_ip_address, 'localhost')
+    end
     with_config(:ssl => true, :verify_certificate => true) do
       assert_equal 'localhost', control.send(:convert_to_ip_address, 'localhost')
     end
@@ -140,7 +116,10 @@ class NewRelic::ControlTest < Test::Unit::TestCase
     old_ipsocket = IPSocket
     Object.instance_eval { remove_const :Resolv}
     Object.instance_eval {remove_const:'IPSocket' }
-    assert_equal(nil, control.send(:convert_to_ip_address, 'collector.newrelic.com'), "DNS is down, should be no IP for server")
+
+    with_config(:ssl => false, :verify_certificate => false) do
+      assert_equal(nil, control.send(:convert_to_ip_address, 'collector.newrelic.com'), "DNS is down, should be no IP for server")
+    end
 
     Object.instance_eval {const_set('Resolv', old_resolv); const_set('IPSocket', old_ipsocket)}
     # these are here to make sure that the constant tomfoolery above

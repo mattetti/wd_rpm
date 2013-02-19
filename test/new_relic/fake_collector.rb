@@ -71,20 +71,48 @@ module NewRelic
       uri.query && uri.query.include?('marshal_format=json')
     end
 
-    def run(port=30303)
+    # We generate a "unique" port for ourselves based off our pid
+    # If this logic changes, look for multiverse newrelic.yml files to update
+    # with it duplicated (since we can't easily pull this ruby into a yml)
+    def self.determine_port
+      30_000 + ($$ % 10_000)
+    end
+
+    def determine_port
+      FakeCollector.determine_port
+    end
+
+    @seen_port_failure = false
+
+    def run(port=nil)
+      port ||= determine_port
       return if @thread && @thread.alive?
       serve_on_port(port) do
         @thread = Thread.new do
+          begin
           ::Rack::Handler::WEBrick.run(self,
                                        :Port => port,
-                                       :Logger => WEBrick::Log.new("/dev/null"),
-                                       :AccessLog => [nil, nil])
+                                       :Logger => ::WEBrick::Log.new("/dev/null"),
+                                       :AccessLog => [ ['/dev/null', ::WEBrick::AccessLog::COMMON_LOG_FORMAT] ]
+                                      )
+          rescue Errno::EADDRINUSE => ex
+            msg = "Port #{port} for FakeCollector was in use"
+            if !@seen_port_failure
+              # This is slow, so only do it the first collision we detect
+              lsof = `lsof | grep #{port}`
+              msg = msg + "\n#{lsof}"
+              @seen_port_failure = true
+            end
+
+            raise Errno::EADDRINUSE.new(msg)
+          end
         end
         @thread.abort_on_exception = true
       end
     end
 
     def serve_on_port(port)
+      port ||= determine_port
       if is_port_available?('127.0.0.1', port)
         yield
         loop do
@@ -127,7 +155,7 @@ module NewRelic
 
   # might we need this?  I'll just leave it here for now
   class FakeCollectorProcess < FakeCollector
-    def run(port=30303)
+    def run(port)
       serve_on_port(port) do
         @pid = Process.fork do
           ::Rack::Handler::WEBrick.run(self, :Port => port)
@@ -262,9 +290,9 @@ if $0 == __FILE__
     end
 
     def invoke(method, post={}, code=200)
-      uri = URI.parse("http://127.0.0.1:30303/agent_listener/8/12345/#{method}")
+      uri = URI.parse("http://127.0.0.1:#{determine_port}/agent_listener/8/12345/#{method}")
       request = Net::HTTP::Post.new("#{uri.path}?#{uri.query}")
-      if uri.query && uri.query.include?('marsha_format=json')
+      if uri.query && uri.query.include?('marshal_format=json')
         request.body = JSON.dump(post)
       else
         request.body = Marshal.dump(post)
