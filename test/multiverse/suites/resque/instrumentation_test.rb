@@ -17,6 +17,7 @@ class ResqueTest < Test::Unit::TestCase
     $collector.run(COLLECTOR_PORT)
     $redis.del('queue:resque_test')
     $redis.set('index_key', 0)
+    Resque::Stat.clear('processed')
     @pidfile = "resque_test.#{$$}.pid"
     JOB_COUNT.times do |i|
       Resque.enqueue(JobForTesting, 'index_key', i + 1)
@@ -40,7 +41,7 @@ class ResqueTest < Test::Unit::TestCase
   end
 
   def start_worker_child(env_vars=nil)
-    worker_cmd = "NEWRELIC_DISPATCHER=resque #{env_vars} QUEUE=* bundle exec rake resque:work"
+    worker_cmd = "#{env_vars} QUEUE=* bundle exec rake resque:work"
     @worker_pid = Process.fork
     Process.exec(worker_cmd) if @worker_pid.nil?
   end
@@ -52,7 +53,7 @@ class ResqueTest < Test::Unit::TestCase
 
   def start_worker_background(env_vars=nil)
     worker_cmd = "PIDFILE=#{@pidfile} TERM_CHILD=1 RESQUE_TERM_TIMEOUT=1 BACKGROUND=1 " +
-      "NEWRELIC_DISPATCHER=resque #{env_vars} QUEUE=* bundle exec rake resque:work"
+      "#{env_vars} QUEUE=* bundle exec rake resque:work"
     system(worker_cmd)
   end
 
@@ -89,7 +90,7 @@ class ResqueTest < Test::Unit::TestCase
   def wait_for_jobs
     time_for_jobs = 5
     begin
-      Timeout.timeout(time_for_jobs) { sleep(0.1) until Resque.info[:pending].zero? }
+      Timeout.timeout(time_for_jobs) { sleep(0.1) until Resque.info[:processed] == JOB_COUNT }
     rescue Timeout::Error => err
       raise err.exception("waiting #{time_for_jobs}s for completion of #{JOB_COUNT} jobs")
     end
